@@ -1,10 +1,16 @@
-AC_INIT([cpuminer-multi], [1.3.7])
+dnl BoostChainMiner — fork of cpuminer-multi (tpruvot)
+AC_INIT([BoostChainMiner], [1.0.0], [https://github.com/DANTE2076/boostchainminer/issues], [boostchainminer], [https://github.com/DANTE2076/boostchainminer])
 
 AC_PREREQ([2.59c])
 AC_CANONICAL_SYSTEM
 AC_CONFIG_SRCDIR([cpu-miner.c])
 AC_CONFIG_HEADERS([cpuminer-config.h])
 AC_CONFIG_MACRO_DIR([m4])
+
+dnl Fork branding macros (optional to use in code banners / --version output)
+AC_DEFINE([BOOSTCHAINMINER_FORK], [1], [Defined if BoostChainMiner fork is built])
+AC_DEFINE_UNQUOTED([BOOSTCHAINMINER_VERSION], ["$PACKAGE_VERSION"], [BoostChainMiner version])
+AC_DEFINE_UNQUOTED([BOOSTCHAINMINER_UPSTREAM], ["cpuminer-multi 1.3.7 (tpruvot)"], [Upstream base])
 
 AM_INIT_AUTOMAKE([foreign subdir-objects])
 
@@ -137,9 +143,9 @@ AM_CONDITIONAL([ARCH_ARM], [test x$have_arm = xtrue])
 AM_CONDITIONAL([MINGW], [test "x$OS" = "xWindows_NT"])
 
 if test x$request_jansson = xtrue ; then
-	JANSSON_LIBS="compat/jansson/libjansson.a"
+        JANSSON_LIBS="compat/jansson/libjansson.a"
 else
-	JANSSON_LIBS=-ljansson
+        JANSSON_LIBS=-ljansson
 fi
 
 # libcurl install path (for mingw : --with-curl=/usr/local)
@@ -190,8 +196,8 @@ AC_SUBST(PTHREAD_LIBS)
 AC_SUBST(WS2_LIBS)
 
 AC_CONFIG_FILES([
-	Makefile
-	compat/Makefile
-	compat/jansson/Makefile
-	])
+        Makefile
+        compat/Makefile
+        compat/jansson/Makefile
+        ])
 AC_OUTPUT

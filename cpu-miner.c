@@ -3455,8 +3455,8 @@ static int thread_create(struct thr_info *thr, void* func)
 
 static void show_credits()
 {
-	printf("** " PACKAGE_NAME " " PACKAGE_VERSION " by tpruvot@github **\n");
-	printf("BTC donation address: 1FhDPLPpw18X4srecguG3MxJYe4a1JsZnd (tpruvot)\n\n");
+        printf("** " PACKAGE_NAME " " PACKAGE_VERSION " — BoostChain fork (upstream: cpuminer-multi by tpruvot) **\n");
+	printf("Upstream donation address (cpuminer-multi): 1FhDPLPpw18X4srecguG3MxJYe4a1JsZnd\n\n");
 }
 
 void get_defconfig_path(char *out, size_t bufsize, char *argv0);
