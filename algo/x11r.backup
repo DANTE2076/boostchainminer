@@ -1,0 +1,148 @@
+#include "miner.h"
+
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+
+#include <openssl/sha.h>  // para seed = SHA256(header[0..75] LE)
+
+#include "sha3/sph_blake.h"
+#include "sha3/sph_bmw.h"
+#include "sha3/sph_groestl.h"
+#include "sha3/sph_jh.h"
+#include "sha3/sph_keccak.h"
+#include "sha3/sph_skein.h"
+#include "sha3/sph_luffa.h"
+#include "sha3/sph_cubehash.h"
+#include "sha3/sph_shavite.h"
+#include "sha3/sph_simd.h"
+#include "sha3/sph_echo.h"
+
+/* ========= Permutación determinista (xorshift64 + Fisher–Yates) ========= */
+
+static void make_perm_from_seed(const unsigned char seed[32], int perm[11]) {
+    for (int i = 0; i < 11; i++) perm[i] = i;
+
+    // 4 words de 64 bits en LE desde seed[32]
+    uint64_t s0=0, s1=0, s2=0, s3=0;
+    for (int i=0;i<8;i++){ s0 |= (uint64_t)seed[i]      << (8*i); }
+    for (int i=0;i<8;i++){ s1 |= (uint64_t)seed[8+i]    << (8*i); }
+    for (int i=0;i<8;i++){ s2 |= (uint64_t)seed[16+i]   << (8*i); }
+    for (int i=0;i<8;i++){ s3 |= (uint64_t)seed[24+i]   << (8*i); }
+    uint64_t st = s0 ^ s1 ^ s2 ^ s3;
+
+    // xorshift64
+    #define XS64(x) ( \
+        x ^= (x << 13), \
+        x ^= (x >> 7),  \
+        x ^= (x << 17), \
+        x )
+
+    // Fisher–Yates
+    for (int i = 10; i > 0; --i) {
+        uint64_t r = XS64(st) % (uint64_t)(i + 1);
+        int j = (int)r;
+        int tmp = perm[i]; perm[i] = perm[j]; perm[j] = tmp;
+    }
+}
+
+/* ========= Aplica función X11 por índice; len es 80 en la primera y 64 después ========= */
+
+static void apply_x11_func_len(int idx, const void *in_buf, size_t in_len, void *out64)
+{
+    switch (idx) {
+        case 0: { sph_blake512_context   c; sph_blake512_init(&c);   sph_blake512(&c,   in_buf, in_len); sph_blake512_close(&c,   out64); } break;
+        case 1: { sph_bmw512_context     c; sph_bmw512_init(&c);     sph_bmw512(&c,     in_buf, in_len); sph_bmw512_close(&c,     out64); } break;
+        case 2: { sph_groestl512_context c; sph_groestl512_init(&c); sph_groestl512(&c, in_buf, in_len); sph_groestl512_close(&c, out64); } break;
+        case 3: { sph_skein512_context   c; sph_skein512_init(&c);   sph_skein512(&c,   in_buf, in_len); sph_skein512_close(&c,   out64); } break;
+        case 4: { sph_jh512_context      c; sph_jh512_init(&c);      sph_jh512(&c,      in_buf, in_len); sph_jh512_close(&c,      out64); } break;
+        case 5: { sph_keccak512_context  c; sph_keccak512_init(&c);  sph_keccak512(&c,  in_buf, in_len); sph_keccak512_close(&c,  out64); } break;
+        case 6: { sph_luffa512_context   c; sph_luffa512_init(&c);   sph_luffa512(&c,   in_buf, in_len); sph_luffa512_close(&c,   out64); } break;
+        case 7: { sph_cubehash512_context c; sph_cubehash512_init(&c); sph_cubehash512(&c, in_buf, in_len); sph_cubehash512_close(&c, out64); } break;
+        case 8: { sph_shavite512_context c; sph_shavite512_init(&c); sph_shavite512(&c, in_buf, in_len); sph_shavite512_close(&c, out64); } break;
+        case 9: { sph_simd512_context    c; sph_simd512_init(&c);    sph_simd512(&c,    in_buf, in_len); sph_simd512_close(&c,    out64); } break;
+        case 10:{ sph_echo512_context    c; sph_echo512_init(&c);    sph_echo512(&c,    in_buf, in_len); sph_echo512_close(&c,    out64); } break;
+        default: memset(out64, 0, 64); break;
+    }
+}
+
+/* ========= Hash principal X11R: usa perm; primera ronda con 80 bytes, resto 64 ========= */
+
+static void x11rhash_with_perm(void *output32, const void *input80_be, const int perm[11])
+{
+    // Buffer de 64 bytes que rota entre rondas
+    uint32_t cur[16], nxt[16];
+
+    // Primera función: la que diga perm[0], sobre 80 bytes
+    apply_x11_func_len(perm[0], input80_be, 80, cur);
+
+    // Resto de funciones: siempre sobre 64 bytes (salida previa)
+    for (int i = 1; i < 11; ++i) {
+        apply_x11_func_len(perm[i], cur, 64, nxt);
+        memcpy(cur, nxt, 64);
+    }
+
+    // Salida: 32 bytes bajos como en X11 clásico
+    memcpy(output32, cur, 32);
+}
+
+/* ========= Miner loop ========= */
+
+int scanhash_x11r(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done)
+{
+    uint32_t _ALIGN(128) hash[8];
+    uint32_t _ALIGN(128) endiandata[20];
+    uint32_t *pdata   = work->data;   // header 80 bytes LE
+    uint32_t *ptarget = work->target;
+
+    const uint32_t Htarg = ptarget[7];
+    const uint32_t first_nonce = pdata[19];
+    uint32_t nonce = first_nonce;
+    volatile uint8_t *restart = &(work_restart[thr_id].restart);
+
+    if (opt_benchmark)
+        ptarget[7] = 0x0cff;
+
+    // BE buffer para SPH, como en X11 clásico (SIN nonce)
+    for (int k = 0; k < 19; k++)
+        be32enc(&endiandata[k], pdata[k]);
+
+    // ========= SEED y PERMUTACIÓN (una vez por job) =========
+    // seed = SHA256(header LE[0..75])  (19 * uint32_t = 76 bytes, sin nonce)
+    unsigned char seed[32];
+    {
+        SHA256_CTX c;
+        SHA256_Init(&c);
+        SHA256_Update(&c, (const unsigned char*)pdata, 76);
+        SHA256_Final(seed, &c);
+    }
+
+    int perm[11];
+    make_perm_from_seed(seed, perm);
+
+#ifdef DEBUG_X11R
+    fprintf(stderr, "X11R perm = [%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]\n",
+        perm[0],perm[1],perm[2],perm[3],perm[4],perm[5],perm[6],perm[7],perm[8],perm[9],perm[10]);
+#endif
+
+    // ========= Bucle de nonces =========
+    do {
+        be32enc(&endiandata[19], nonce); // set nonce (BE) en el header de 80 bytes
+
+        x11rhash_with_perm(hash, endiandata, perm);
+
+        if (hash[7] <= Htarg && fulltest(hash, ptarget)) {
+            work_set_target_ratio(work, hash);
+            pdata[19] = nonce;
+            *hashes_done = pdata[19] - first_nonce;
+            return 1;
+        }
+        nonce++;
+
+    } while (nonce < max_nonce && !(*restart));
+
+    pdata[19] = nonce;
+    *hashes_done = pdata[19] - first_nonce + 1;
+    return 0;
+}

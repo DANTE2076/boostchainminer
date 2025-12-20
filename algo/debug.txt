@@ -1,0 +1,1 @@
+-bash: ./cpuminer: No such file or directory
