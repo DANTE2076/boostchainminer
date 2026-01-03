@@ -73,19 +73,22 @@ jobs:
 
           # Detect architecture and disable assembly on ARM64
           ARCH=$(uname -m)
-          if [ "$ARCH" = "arm64" ]; then
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
             echo "Building for ARM64 - disabling assembly optimizations"
-            CONFIG_FLAGS="--disable-assembly"
+            ./configure \
+              --with-crypto="$OPENSSL_PREFIX" \
+              --with-curl="$CURL_PREFIX" \
+              --disable-assembly \
+              CFLAGS="-O2"
           else
             echo "Building for x86_64 - enabling assembly optimizations"
-            CONFIG_FLAGS=""
+            ./configure \
+              --with-crypto="$OPENSSL_PREFIX" \
+              --with-curl="$CURL_PREFIX" \
+              CFLAGS="-O2 -DUSE_ASM"
           fi
-
-          ./configure \
-            --with-crypto="$OPENSSL_PREFIX" \
-            --with-curl="$CURL_PREFIX" \
-            $CONFIG_FLAGS \
-            CFLAGS="-O2"
 
           make -j$(sysctl -n hw.ncpu)
           strip boostchainminer
@@ -130,6 +133,13 @@ jobs:
 
       - name: Build for Windows
         run: |
+          echo "=== Build Environment Info ==="
+          uname -a
+          gcc --version
+          which gcc
+          pkg-config --version
+          echo "=============================="
+
           ./autogen.sh
 
           ./configure \
@@ -146,6 +156,9 @@ jobs:
           elif [ -f boostchainminer.exe ]; then
             strip boostchainminer.exe
           fi
+
+          echo "Build completed successfully"
+          ls -lh boostchainminer.exe
 
       - name: Package Windows binary
         shell: pwsh
