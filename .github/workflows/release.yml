@@ -1,0 +1,189 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y automake autoconf pkg-config \
+            libcurl4-openssl-dev libjansson-dev \
+            libssl-dev zlib1g-dev make g++
+
+      - name: Build for Linux
+        run: |
+          ./autogen.sh
+          ./configure --with-crypto --with-curl CFLAGS="-O2 -DUSE_ASM"
+          make -j$(nproc)
+          strip -s boostchainminer
+
+      - name: Package Linux binary
+        run: |
+          mkdir -p dist
+          tar -czf dist/boostchainminer-linux-x86_64.tar.gz boostchainminer README.md LICENSE
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boostchainminer-linux
+          path: dist/boostchainminer-linux-x86_64.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install automake autoconf pkg-config curl jansson openssl@3
+
+      - name: Build for macOS
+        run: |
+          ./autogen.sh
+
+          # Get Homebrew prefixes
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          CURL_PREFIX="$(brew --prefix curl)"
+          JANSSON_PREFIX="$(brew --prefix jansson)"
+
+          # Set up compiler flags
+          export CPPFLAGS="-I$OPENSSL_PREFIX/include -I$CURL_PREFIX/include -I$JANSSON_PREFIX/include"
+          export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$CURL_PREFIX/lib -L$JANSSON_PREFIX/lib"
+
+          # Run nomacro.pl if it exists
+          if [ -f ./nomacro.pl ]; then
+            ./nomacro.pl
+          fi
+
+          ./configure \
+            --with-crypto="$OPENSSL_PREFIX" \
+            --with-curl="$CURL_PREFIX" \
+            CFLAGS="-O2 -DUSE_ASM"
+
+          make -j$(sysctl -n hw.ncpu)
+          strip boostchainminer
+
+      - name: Package macOS binary
+        run: |
+          mkdir -p dist
+          tar -czf dist/boostchainminer-macos-x86_64.tar.gz boostchainminer README.md LICENSE
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boostchainminer-macos
+          path: dist/boostchainminer-macos-x86_64.tar.gz
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install MinGW and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 automake autoconf pkg-config \
+            libcurl4-openssl-dev libjansson-dev libssl-dev make
+
+      - name: Build for Windows
+        run: |
+          ./autogen.sh
+
+          # MinGW cross-compilation
+          CC=x86_64-w64-mingw32-gcc \
+          CXX=x86_64-w64-mingw32-g++ \
+          ./configure \
+            --host=x86_64-w64-mingw32 \
+            --with-crypto \
+            --with-curl \
+            CFLAGS="-O2 -DUSE_ASM -DCURL_STATICLIB -static-libgcc" \
+            LDFLAGS="-static"
+
+          make -j$(nproc)
+
+          # The binary might be named cpuminer.exe or boostchainminer.exe
+          if [ -f cpuminer.exe ]; then
+            x86_64-w64-mingw32-strip cpuminer.exe
+            mv cpuminer.exe boostchainminer.exe
+          elif [ -f boostchainminer.exe ]; then
+            x86_64-w64-mingw32-strip boostchainminer.exe
+          fi
+
+      - name: Package Windows binary
+        run: |
+          mkdir -p dist
+          zip -j dist/boostchainminer-windows-x86_64.zip boostchainminer.exe README.md LICENSE
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boostchainminer-windows
+          path: dist/boostchainminer-windows-x86_64.zip
+
+  create-release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/boostchainminer-linux/boostchainminer-linux-x86_64.tar.gz
+            artifacts/boostchainminer-macos/boostchainminer-macos-x86_64.tar.gz
+            artifacts/boostchainminer-windows/boostchainminer-windows-x86_64.zip
+          body: |
+            # BoostChainMiner Release
+
+            BoostChain CPU miner with x11r algorithm support.
+
+            ## Downloads
+
+            - **Linux**: boostchainminer-linux-x86_64.tar.gz
+            - **macOS**: boostchainminer-macos-x86_64.tar.gz
+            - **Windows**: boostchainminer-windows-x86_64.zip
+
+            ## Quick Start
+
+            ```bash
+            ./boostchainminer -a x11r \
+              -o stratum+tcp://YOUR_POOL_HOST:PORT \
+              -u YOUR_BOOST_ADDRESS.WORKER \
+              -p x \
+              -t $(nproc)
+            ```
+
+            For more information, see the README.md file.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
