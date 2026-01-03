@@ -71,10 +71,24 @@ jobs:
             ./nomacro.pl
           fi
 
-          ./configure \
-            --with-crypto="$OPENSSL_PREFIX" \
-            --with-curl="$CURL_PREFIX" \
-            CFLAGS="-O2 -DUSE_ASM"
+          # Detect architecture and disable assembly on ARM64
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+            echo "Building for ARM64 - disabling assembly optimizations"
+            ./configure \
+              --with-crypto="$OPENSSL_PREFIX" \
+              --with-curl="$CURL_PREFIX" \
+              --disable-assembly \
+              CFLAGS="-O2"
+          else
+            echo "Building for x86_64 - enabling assembly optimizations"
+            ./configure \
+              --with-crypto="$OPENSSL_PREFIX" \
+              --with-curl="$CURL_PREFIX" \
+              CFLAGS="-O2 -DUSE_ASM"
+          fi
 
           make -j$(sysctl -n hw.ncpu)
           strip boostchainminer
@@ -82,54 +96,75 @@ jobs:
       - name: Package macOS binary
         run: |
           mkdir -p dist
-          tar -czf dist/boostchainminer-macos-x86_64.tar.gz boostchainminer README.md LICENSE
+          ARCH=$(uname -m)
+          tar -czf dist/boostchainminer-macos-${ARCH}.tar.gz boostchainminer README.md LICENSE
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: boostchainminer-macos
-          path: dist/boostchainminer-macos-x86_64.tar.gz
+          path: dist/boostchainminer-macos-*.tar.gz
 
   build-windows:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install MinGW and dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 automake autoconf pkg-config \
-            libcurl4-openssl-dev libjansson-dev libssl-dev make
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-curl
+            mingw-w64-x86_64-jansson
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zlib
+            autoconf
+            automake
+            pkg-config
+            make
 
       - name: Build for Windows
         run: |
+          echo "=== Build Environment Info ==="
+          uname -a
+          gcc --version
+          which gcc
+          pkg-config --version
+          echo "=============================="
+
           ./autogen.sh
 
-          # MinGW cross-compilation
-          CC=x86_64-w64-mingw32-gcc \
-          CXX=x86_64-w64-mingw32-g++ \
           ./configure \
-            --host=x86_64-w64-mingw32 \
             --with-crypto \
             --with-curl \
-            CFLAGS="-O2 -DUSE_ASM -DCURL_STATICLIB -static-libgcc" \
-            LDFLAGS="-static"
+            CFLAGS="-O2 -DUSE_ASM"
 
           make -j$(nproc)
 
           # The binary might be named cpuminer.exe or boostchainminer.exe
           if [ -f cpuminer.exe ]; then
-            x86_64-w64-mingw32-strip cpuminer.exe
+            strip cpuminer.exe
             mv cpuminer.exe boostchainminer.exe
           elif [ -f boostchainminer.exe ]; then
-            x86_64-w64-mingw32-strip boostchainminer.exe
+            strip boostchainminer.exe
           fi
 
+          echo "Build completed successfully"
+          ls -lh boostchainminer.exe
+
       - name: Package Windows binary
+        shell: pwsh
         run: |
-          mkdir -p dist
-          zip -j dist/boostchainminer-windows-x86_64.zip boostchainminer.exe README.md LICENSE
+          New-Item -ItemType Directory -Force -Path dist
+          Compress-Archive -Path boostchainminer.exe,README.md,LICENSE -DestinationPath dist/boostchainminer-windows-x86_64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -157,9 +192,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: Release ${{ github.event.inputs.version || github.ref_name }}
           files: |
             artifacts/boostchainminer-linux/boostchainminer-linux-x86_64.tar.gz
-            artifacts/boostchainminer-macos/boostchainminer-macos-x86_64.tar.gz
+            artifacts/boostchainminer-macos/boostchainminer-macos-*.tar.gz
             artifacts/boostchainminer-windows/boostchainminer-windows-x86_64.zip
           body: |
             # BoostChainMiner Release
@@ -168,13 +205,15 @@ jobs:
 
             ## Downloads
 
-            - **Linux**: boostchainminer-linux-x86_64.tar.gz
-            - **macOS**: boostchainminer-macos-x86_64.tar.gz
-            - **Windows**: boostchainminer-windows-x86_64.zip
+            - **Linux (x86_64)**: boostchainminer-linux-x86_64.tar.gz
+            - **macOS (Intel/Apple Silicon)**: boostchainminer-macos-*.tar.gz
+            - **Windows (x86_64)**: boostchainminer-windows-x86_64.zip
 
             ## Quick Start
 
+            ### Linux / macOS
             ```bash
+            tar -xzf boostchainminer-*.tar.gz
             ./boostchainminer -a x11r \
               -o stratum+tcp://YOUR_POOL_HOST:PORT \
               -u YOUR_BOOST_ADDRESS.WORKER \
@@ -182,7 +221,16 @@ jobs:
               -t $(nproc)
             ```
 
-            For more information, see the README.md file.
+            ### Windows
+            ```cmd
+            boostchainminer.exe -a x11r -o stratum+tcp://YOUR_POOL_HOST:PORT -u YOUR_BOOST_ADDRESS.WORKER -p x -t 4
+            ```
+
+            ## Notes
+
+            - **macOS ARM64 (Apple Silicon)**: Assembly optimizations are disabled for compatibility. Performance is slightly lower but fully functional.
+            - **macOS x86_64 (Intel)**: Full assembly optimizations enabled.
+            - For more information, see the README.md file.
           draft: false
           prerelease: false
         env:
