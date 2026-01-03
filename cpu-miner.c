@@ -2042,6 +2042,10 @@ static void *miner_thread(void *userdata)
 		}
 	}
 
+	if (opt_cpu_limit > 0 && opt_cpu_limit < 100) {
+		applog(LOG_INFO, "CPU #%d: CPU usage limited to %d%%", thr_id, opt_cpu_limit);
+	}
+
 	while (1) {
 		uint64_t hashes_done;
 		struct timeval tv_start, tv_end, diff;
@@ -2512,6 +2516,9 @@ static void *miner_thread(void *userdata)
 			unsigned long work_time_us = diff.tv_sec * 1000000 + diff.tv_usec;
 			unsigned long sleep_time_us = work_time_us * (100 - opt_cpu_limit) / opt_cpu_limit;
 			if (sleep_time_us > 0) {
+				if (opt_debug)
+					applog(LOG_DEBUG, "CPU #%d: work %lu us, sleep %lu us (limit %d%%)",
+						thr_id, work_time_us, sleep_time_us, opt_cpu_limit);
 				usleep(sleep_time_us);
 			}
 		}
