@@ -192,6 +192,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: Release ${{ github.event.inputs.version || github.ref_name }}
           files: |
             artifacts/boostchainminer-linux/boostchainminer-linux-x86_64.tar.gz
             artifacts/boostchainminer-macos/boostchainminer-macos-*.tar.gz
