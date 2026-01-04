@@ -255,6 +255,7 @@ static unsigned int opt_nfactor = 6;
 int opt_n_threads = 0;
 int64_t opt_affinity = -1L;
 int opt_priority = 0;
+int opt_cpu_limit = 0;  /* CPU usage limit in percent (0 = no limit) */
 int num_cpus;
 char *rpc_url;
 char *rpc_userpass;
@@ -431,6 +432,7 @@ Options:\n\
       --cputest         debug hashes from cpu algorithms\n\
       --cpu-affinity    set process affinity to cpu core(s), mask 0x3 for cores 0 and 1\n\
       --cpu-priority    set process priority (default: 0 idle, 2 normal to 5 highest)\n\
+      --cpu-limit=N     limit CPU usage to N percent (1-100, default: 100 no limit)\n\
   -b, --api-bind        IP/Port for the miner API (default: 127.0.0.1:4048)\n\
       --api-remote      Allow remote control\n\
       --max-temp=N      Only mine if cpu temp is less than specified value (linux)\n\
@@ -461,6 +463,7 @@ static struct option const options[] = {
 	{ "config", 1, NULL, 'c' },
 	{ "cpu-affinity", 1, NULL, 1020 },
 	{ "cpu-priority", 1, NULL, 1021 },
+	{ "cpu-limit", 1, NULL, 1022 },
 	{ "no-color", 0, NULL, 1002 },
 	{ "debug", 0, NULL, 'D' },
 	{ "diff-factor", 1, NULL, 'f' },
@@ -2039,6 +2042,10 @@ static void *miner_thread(void *userdata)
 		}
 	}
 
+	if (opt_cpu_limit > 0 && opt_cpu_limit < 100) {
+		applog(LOG_INFO, "CPU #%d: CPU usage limited to %d%%", thr_id, opt_cpu_limit);
+	}
+
 	while (1) {
 		uint64_t hashes_done;
 		struct timeval tv_start, tv_end, diff;
@@ -2498,10 +2505,29 @@ static void *miner_thread(void *userdata)
 		gettimeofday(&tv_end, NULL);
 		timeval_subtract(&diff, &tv_end, &tv_start);
 		if (diff.tv_usec || diff.tv_sec) {
+			double work_time_sec = diff.tv_sec + diff.tv_usec * 1e-6;
+			double hashrate = hashes_done / work_time_sec;
+
+			/* Adjust hashrate for CPU throttling to show effective rate */
+			if (opt_cpu_limit > 0 && opt_cpu_limit < 100) {
+				hashrate = hashrate * opt_cpu_limit / 100.0;
+			}
+
 			pthread_mutex_lock(&stats_lock);
-			thr_hashrates[thr_id] =
-				hashes_done / (diff.tv_sec + diff.tv_usec * 1e-6);
+			thr_hashrates[thr_id] = hashrate;
 			pthread_mutex_unlock(&stats_lock);
+		}
+
+		/* CPU usage throttling */
+		if (opt_cpu_limit > 0 && opt_cpu_limit < 100) {
+			unsigned long work_time_us = diff.tv_sec * 1000000 + diff.tv_usec;
+			unsigned long sleep_time_us = work_time_us * (100 - opt_cpu_limit) / opt_cpu_limit;
+			if (sleep_time_us > 0) {
+				if (opt_debug)
+					applog(LOG_DEBUG, "CPU #%d: work %lu us, sleep %lu us (limit %d%%)",
+						thr_id, work_time_us, sleep_time_us, opt_cpu_limit);
+				usleep(sleep_time_us);
+			}
 		}
 		if (!opt_quiet && (time(NULL) - tm_rate_log) > opt_maxlograte) {
 			switch(opt_algo) {
@@ -3316,6 +3342,14 @@ void parse_arg(int key, char *arg)
 		if (v < 0 || v > 5)	/* sanity check */
 			show_usage_and_exit(1);
 		opt_priority = v;
+		break;
+	case 1022: // cpu-limit
+		v = atoi(arg);
+		if (v < 1 || v > 100) {	/* sanity check */
+			applog(LOG_ERR, "CPU limit must be between 1 and 100");
+			show_usage_and_exit(1);
+		}
+		opt_cpu_limit = v;
 		break;
 	case 1060: // max-temp
 		d = atof(arg);
