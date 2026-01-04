@@ -2505,9 +2505,16 @@ static void *miner_thread(void *userdata)
 		gettimeofday(&tv_end, NULL);
 		timeval_subtract(&diff, &tv_end, &tv_start);
 		if (diff.tv_usec || diff.tv_sec) {
+			double work_time_sec = diff.tv_sec + diff.tv_usec * 1e-6;
+			double hashrate = hashes_done / work_time_sec;
+
+			/* Adjust hashrate for CPU throttling to show effective rate */
+			if (opt_cpu_limit > 0 && opt_cpu_limit < 100) {
+				hashrate = hashrate * opt_cpu_limit / 100.0;
+			}
+
 			pthread_mutex_lock(&stats_lock);
-			thr_hashrates[thr_id] =
-				hashes_done / (diff.tv_sec + diff.tv_usec * 1e-6);
+			thr_hashrates[thr_id] = hashrate;
 			pthread_mutex_unlock(&stats_lock);
 		}
 
